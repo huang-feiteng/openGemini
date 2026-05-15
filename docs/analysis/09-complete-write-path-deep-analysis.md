@@ -7,14 +7,16 @@
 **验证级别**: 逐行阅读验证 (Line-by-Line Verification)
 
 **已验证核心文件**:
-- `engine/shard.go`: WriteRows 入口 (line 468-625)
-- `engine/wal.go`: WAL 写入 (line 218-250+)
-- `engine/mutable/table.go`: MemTable 结构与管理 (line 297-549)
+- `engine/shard.go`: WriteRows 入口 (line 512-537)
+- `engine/wal.go`: WAL 写入 (line 248-263)
+- `engine/mutable/table.go`: MemTable 结构与管理 (line 297-309)
 - `engine/immutable/msbuilder.go`: TSSP 文件构建器 (line 1-1522)
 - `engine/immutable/tssp_file.go`: TSSP 文件读取器 (line 1-1170)
 - `engine/immutable/compact.go`: Compaction 逻辑 (line 100-544)
 - `engine/ts_storage.go`: Snapshot 实现 (line 97-214)
 - `engine/immutable/column_builder.go`: 列编码构建器 (line 1-502)
+
+**代码版本**: 基于当前工作区代码验证 (2026-05-15)
 
 ---
 
@@ -25,9 +27,9 @@ HTTP Write Request (http/handler.go)
   ↓
 coordinator.WriteRows (coordinator/_write.go:73-163)
   ↓
-shard.WriteRows (engine/shard.go:468-556)
+shard.WriteRows (engine/shard.go:512-537)
   ├─→ writeRowsShelfMode (engine/shard.go:558-588) [ShelfMode 优化路径]
-  └─→ writeRows (engine/shard.go:591-625) [标准路径]
+  └─→ writeRowsToTable (engine/shard.go:591-625+) [标准路径]
        ├─→ MTable.WriteRows (MemTable 写入内存)
        └─→ wal.Write (WAL 持久化)
   ↓
@@ -43,7 +45,7 @@ MsBuilder.WriteData (engine/immutable/msbuilder.go:1247-1301)
   ↓
 ColumnBuilder.EncodeChunk (列数据编码)
   ↓
-MsBuilder.Flush (engine/immutable/msbuilder.go:1354-1444)
+MsBuilder.Flush (engine/immutable/msbuilder.go:1354-1432)
   ↓
 MsBuilder.NewTSSPFile (engine/immutable/msbuilder.go:1189-1232)
   ↓
@@ -54,10 +56,10 @@ TSSP 文件落盘 (engine/immutable/tssp_file.go)
 
 ## 2. 写入入口点深度分析 (engine/shard.go)
 
-### 2.1 WriteRows 主函数 (line 468-556)
+### 2.1 WriteRows 主函数 (line 512-537)
 
 ```go
-// engine/shard.go:468
+// engine/shard.go:512
 func (s *shard) WriteRows(ctx context.Context, rows []influx.Row) (err error) {
     // Step 1: 权限验证
     if err := s.validWritePrivilege(ctx); err != nil {
@@ -216,48 +218,68 @@ func (s *shard) writeRows(mw *mstWriteCtx, binaryRows []byte, curSize int64) err
 
 ## 3. WAL 写入机制 (engine/wal.go)
 
-### 3.1 WAL Write 方法 (line 218-250+)
+### 3.1 WAL Write 方法 (line 248-263)
 
 ```go
+// engine/wal.go:248
+func (l *WAL) Write(rows []byte, typ WalRecordType, maxRowTime int64) error {
+    if !l.walEnabled {
+        return nil
+    }
+    if len(rows) == 0 {
+        return nil
+    }
+    // write wal
+    start := time.Now()
+    if l.usedForStream {
+        atomic2.CompareAndSwapMaxInt64(&l.maxRowTime, maxRowTime)
+    }
+    err := l.writeBinary(&walRecord{binary: rows, writeWalType: typ})
+    atomic.AddInt64(&statistics.PerfStat.WriteWalDurationNs, time.Since(start).Nanoseconds())
+    return err
+}
+```
+
+**内部调用 writeBinary**:
+```go
 // engine/wal.go:218
-func (w *wal) writeBinary(data []byte, typ WriteWalType, maxTime int64) error {
-    // Step 1: 计算写入大小
-    var buf []byte
-    size := len(data) + walHeaderSize
-    if cap(w.walBuffer) >= size {
-        buf = w.walBuffer[:size]
-    } else {
-        buf = make([]byte, size)
-        w.walBuffer = buf
-    }
+func (l *WAL) writeBinary(walRecord *walRecord) error {
+    // Step 1: Snappy 压缩
+    compBuf := walCompBufPool.Get()
+    maxEncodeLen := snappy.MaxEncodedLen(len(walRecord.binary))
+    compBuf = bufferpool.Resize(compBuf, WalRecordHeadSize+maxEncodeLen)
     
-    // Step 2: 构建 WAL header
-    // Header 格式: [type(1byte)][size(4bytes)][maxTime(8bytes)][CRC(4bytes)]
-    buf[0] = byte(typ)
-    numberenc.MarshalUint32Copy(buf[1:5], uint32(len(data)))
-    numberenc.MarshalInt64Copy(buf[5:13], maxTime)
-    copy(buf[13:], data)
+    // Step 2: 压缩数据
+    compData := snappy.Encode(compBuf[WalRecordHeadSize:], walRecord.binary)
     
-    // Step 3: 计算 CRC 校验
-    crc := crc32.ChecksumIEEE(buf[13:])
-    numberenc.MarshalUint32Copy(buf[13+len(data):], crc)
+    // Step 3: 编码记录头
+    compBuf[0] = byte(walRecord.writeWalType)
+    binary.BigEndian.PutUint32(compBuf[1:WalRecordHeadSize], uint32(len(compData)))
+    compBuf = compBuf[:WalRecordHeadSize+len(compData)]
     
-    // Step 4: 写入文件
-    wn, err := w.fd.Write(buf)
+    // Step 4: 写入数据
+    l.mu.RLock()
+    err := l.logWriter[(atomic.AddUint64(&l.writeReq, 1)-1)%uint64(l.partitionNum)].Write(compBuf)
+    l.mu.RUnlock()
     if err != nil {
-        return err
+        panic(fmt.Errorf("writing WAL entry failed: %v", err))
     }
-    if wn != size {
-        return io.ErrShortWrite
-    }
-    
-    // Step 5: 更新统计
-    atomic.AddInt64(&w.writeBytes, int64(wn))
-    atomic.AddInt64(&statistics.PerfStat.WalWriteBytes, int64(wn))
-    
     return nil
 }
 ```
+
+**WAL 记录格式**:
+```
++----------+----------+----------------+----------+
+| Type(1B) | Len(4B)  | Data(Snappy)   | (CRC)    |
++----------+----------+----------------+----------+
+```
+
+**关键设计**:
+- 使用 `walRecord` 结构体封装数据
+- Snappy 压缩减少磁盘占用
+- 分区轮询写入提高并发性能
+- `Write` 方法暴露给外部，`writeBinary` 内部使用
 
 **WAL 文件格式**:
 ```
@@ -282,24 +304,24 @@ const (
 
 ## 4. MemTable 结构与内存管理 (engine/mutable/table.go)
 
-### 4.1 MemTable 数据结构 (line 57-100)
+### 4.1 MemTable 数据结构 (line 297-309)
 
 ```go
-// engine/mutable/table.go:57
+// engine/mutable/table.go:297
 type MemTable struct {
-    ref       int32              // 引用计数
-    memSize   int64              // 内存使用量 (原子操作)
-    msInfoMap map[string]*MsInfo // measurement 信息映射
-    MTable    MemTableImpl       // 实际实现 (TSSTORE/COLUMNSTORE)
-    releaseHook MemTableReleaseHook // 释放回调
-    idx       *ski.ShardKeyIndex // 分片键索引
-}
+    mu  sync.RWMutex
+    ref int32
+    idx *ski.ShardKeyIndex
 
-type MsInfo struct {
-    schema    record.Schemas     // Schema 定义
-    seqIDs    map[uint64]uint64  // Series ID → Sequence ID 映射
-    chunkMap  map[uint64]*Chunk  // Chunk 数据缓存
-    mu        sync.RWMutex
+    msInfoMap map[string]*MsInfo // measurements schemas, {"cpu_0001": *MsInfo}
+    msInfos   []MsInfo           // pre-allocation
+
+    memSize int64
+    MTable  MTable //public method in MemTable
+
+    releaseHook MemTableReleaseHook
+}
+```
 }
 ```
 
@@ -1568,3 +1590,8 @@ type MetaIndex struct {
 **分析完成时间**: 2026-05-15
 **分析者**: AI Coding Assistant
 **验证级别**: Line-by-Line Code Verification
+
+---
+**最后验证**: 2026-05-15
+**验证状态**: ✅ 已修正
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5

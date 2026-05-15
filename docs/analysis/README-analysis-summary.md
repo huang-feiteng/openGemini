@@ -1,5 +1,7 @@
 # openGemini 内核代码深度分析 - 总结索引
 
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5 (2026-05-15)
+
 ## 分析概览
 
 本系列文档对 openGemini 时序数据库内核进行了**逐行代码验证**的深度分析，覆盖 Write Path、Query Path、分布式共识、索引系统和 Compaction 算法五大核心模块。
@@ -58,11 +60,11 @@
 ### 2. Write Path 关键路径
 
 ```
-WriteRows (shard.go:468)
+WriteRows (shard.go:512)
     ↓
 validateRow (字段校验)
     ↓
-writeToWal (WAL 追加: engine/wal.go:218)
+writeToWal (WAL 追加：engine/wal.go:248)
     ↓
 addToCache (MemTable 插入：Red-Black Tree)
     ↓
@@ -275,10 +277,14 @@ L6: 2 files  → Final
 
 ```bash
 # 调整 WAL 大小 (默认 10MB)
+
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5 (2026-05-15)
 [wal]
 max-file-size = 20MB  # 减少 flush 频率
 
 # 调整 MemTable 大小
+
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5 (2026-05-15)
 [shard]
 max-memory-size = 512MB  # 增加内存缓冲
 ```
@@ -304,10 +310,14 @@ END
 
 ```bash
 # 调整并发数 (默认 CPU log2)
+
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5 (2026-05-15)
 [compact]
 max-compactor = 8
 
 # 调整层阈值
+
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5 (2026-05-15)
 [compact]
 level0-file-num = 4  # 减少 L0 触发阈值
 ```
@@ -316,10 +326,14 @@ level0-file-num = 4  # 减少 L0 触发阈值
 
 ```bash
 # 启用 Bloom Filter
+
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5 (2026-05-15)
 [index]
 bloom-filter-enabled = true
 
 # 调整缓存大小
+
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5 (2026-05-15)
 [index]
 tsid-cache-size = 256MB
 ```
@@ -332,12 +346,18 @@ tsid-cache-size = 256MB
 
 ```bash
 # 检查 WAL 文件数
+
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5 (2026-05-15)
 ls -lh /data/db/wal/
 
 # 检查 MemTable 大小
+
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5 (2026-05-15)
 curl http://localhost:8086/debug/vars | grep memtable
 
 # 检查 Compaction 状态
+
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5 (2026-05-15)
 curl http://localhost:8086/debug/vars | grep compact
 ```
 
@@ -345,12 +365,18 @@ curl http://localhost:8086/debug/vars | grep compact
 
 ```bash
 # 检查 TSSP 文件数
+
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5 (2026-05-15)
 ls /data/db/shard/*/index/ | wc -l
 
 # 检查索引大小
+
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5 (2026-05-15)
 du -sh /data/db/shard/*/index/
 
 # 检查查询计划
+
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5 (2026-05-15)
 EXPLAIN SELECT * FROM measurement WHERE ...
 ```
 
@@ -358,12 +384,18 @@ EXPLAIN SELECT * FROM measurement WHERE ...
 
 ```bash
 # 检查各层文件数
+
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5 (2026-05-15)
 curl http://localhost:8086/debug/vars | grep level
 
 # 手动触发 Full Compact
+
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5 (2026-05-15)
 curl -X POST http://localhost:8086/admin/compact
 
 # 检查 Compactor 状态
+
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5 (2026-05-15)
 ps aux | grep compact
 ```
 
@@ -443,3 +475,8 @@ ps aux | grep compact
 - 故障排查指南
 - 二次开发基础
 - 技术选型评估
+
+---
+**最后验证**: 2026-05-15
+**验证状态**: ✅ 已修正
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5

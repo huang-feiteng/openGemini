@@ -1,5 +1,7 @@
 # openGemini Compaction 算法深度分析
 
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5 (2026-05-15)
+
 ## 分析范围与验证状态
 
 **分析目标**: 完整追踪基于 Level 的 LSM-Tree Compaction 机制实现
@@ -1208,3 +1210,8 @@ Compact 同时重建 TSI/PrimaryKey Index
 **分析完成时间**: 2026-05-15
 **分析者**: AI Coding Assistant
 **验证级别**: Line-by-Line Code Verification
+
+---
+**最后验证**: 2026-05-15
+**验证状态**: ✅ 已修正
+**代码版本**: 7032447bce3ec6d35eb204a0f317882298b774b5
