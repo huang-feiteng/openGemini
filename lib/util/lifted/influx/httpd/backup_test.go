@@ -362,8 +362,10 @@ func TestRecover(t *testing.T) {
 		IncBackupDataPath:  incBackupPath,
 		Force:              true,
 		DataDir:            "/tmp/openGemini/backup_dir/data",
+		MetaDir:            "/tmp/openGemini/backup_dir/data/meta",
 	}
 	_ = os.MkdirAll(filepath.Join(fullBackupPath, backup.WalBackupDir, "wal"), 0700)
+	_ = os.MkdirAll(filepath.Join(fullBackupPath, backup.MetaBackupDir), 0700)
 
 	if err := recoverConfig.BackupRecover(); err != nil {
 		t.Fatal(err)
@@ -407,8 +409,10 @@ func TestRecover2(t *testing.T) {
 		IncBackupDataPath:  incBackupPath,
 		Force:              true,
 		DataDir:            "/tmp/openGemini/backup_dir/data",
+		MetaDir:            "/tmp/openGemini/backup_dir/data/meta",
 	}
 	_ = os.MkdirAll(filepath.Join(incBackupPath, backup.WalBackupDir, "wal"), 0700)
+	_ = os.MkdirAll(filepath.Join(incBackupPath, backup.MetaBackupDir), 0700)
 
 	if err := r.BackupRecover(); err != nil {
 		t.Fatal(err)
