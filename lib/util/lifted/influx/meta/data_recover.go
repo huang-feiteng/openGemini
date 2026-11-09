@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -215,6 +216,7 @@ func AddChildren(parent *DirNode) error {
 	if err != nil {
 		return fmt.Errorf("Failed to read the directory %s: %w", parent.Path, err)
 	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
 
 	for _, entry := range entries {
 		link, err := IsDirOrLink(entry.Name())
